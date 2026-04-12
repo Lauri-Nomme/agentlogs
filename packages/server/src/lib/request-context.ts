@@ -15,5 +15,9 @@ export interface RequestContext {
 export function getRequestContext(request: Request, userId?: string): RequestContext {
   const headerId = request.headers.get("x-request-id");
   const requestId = headerId && headerId.length > 0 ? headerId : randomUUID();
-  return { requestId, userId };
+  // Extract IP from common proxy headers
+  const xff = request.headers.get("x-forwarded-for");
+  const xri = request.headers.get("x-real-ip");
+  const ip = xff?.split(",").map((s) => s.trim())[0] || xri || undefined;
+  return { requestId, userId, ip };
 }
