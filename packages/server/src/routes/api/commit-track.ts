@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { commitTracking, transcripts } from "../../db/schema";
 import { requireActiveUser, getAuthErrorResponse } from "../../lib/access-control";
 import { logger } from "../../lib/logger";
+import { getRequestContext } from "../../lib/request-context";
 
 interface CommitTrackPayload {
   transcript_id?: string;
@@ -21,69 +22,74 @@ export const Route = createFileRoute("/api/commit-track")({
     handlers: {
       POST: async ({ request }) => {
         const db = createDrizzle(env.DB);
-        logger.debug("Commit track request received");
-
+        const reqCtx = getRequestContext(request);
+        logger.debug("Commit track request received", undefined, reqCtx);
         let userId: string;
         let userRole: "user" | "admin";
         try {
           const activeUser = await requireActiveUser(request.headers, db);
           userId = activeUser.userId;
           userRole = activeUser.role;
+          reqCtx.userId = userId;
         } catch (error) {
           const authError = getAuthErrorResponse(error);
           if (authError) {
-            logger.warn("Commit track auth failed", { status: authError.status, error: authError.message });
+            logger.warn("Commit track auth failed", { status: authError.status, error: authError.message }, reqCtx);
             return json({ error: authError.message }, { status: authError.status });
           }
-          logger.error("Commit track auth failed: unexpected error", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          logger.error(
+            "Commit track auth failed: unexpected error",
+            {
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            },
+            reqCtx,
+          );
           return json({ error: "Unauthorized" }, { status: 401 });
         }
-
         let payload: CommitTrackPayload;
         try {
           payload = (await request.json()) as CommitTrackPayload;
         } catch (error) {
-          logger.error("Commit track validation failed: invalid JSON", {
-            userId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          logger.error(
+            "Commit track validation failed: invalid JSON",
+            {
+              userId,
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            },
+            reqCtx,
+          );
           return json({ error: "Invalid JSON" }, { status: 400 });
         }
-
         const { transcript_id, repo_path, timestamp, commit_sha, commit_title, branch } = payload;
-
+        reqCtx.transcriptId = transcript_id;
+        reqCtx.repoPath = repo_path;
         if (!transcript_id || !repo_path || !timestamp) {
-          logger.error("Commit track validation failed: missing required fields", {
-            userId,
-            transcript_id,
-            repo_path,
-            timestamp,
-          });
+          logger.error(
+            "Commit track validation failed: missing required fields",
+            { userId, transcript_id, repo_path, timestamp },
+            reqCtx,
+          );
           return json({ error: "Missing required fields" }, { status: 400 });
         }
-
         try {
           const transcript = await db.query.transcripts.findFirst({
             columns: { userId: true },
             where: eq(transcripts.id, transcript_id),
           });
-
           if (!transcript) {
-            logger.warn("Commit track rejected: transcript not found", { transcriptId: transcript_id, userId });
+            logger.warn("Commit track rejected: transcript not found", { transcriptId: transcript_id, userId }, reqCtx);
             return json({ error: "Transcript not found" }, { status: 404 });
           }
-
           if (transcript.userId !== userId && userRole !== "admin") {
-            logger.warn("Commit track rejected: not owner", {
-              transcriptId: transcript_id,
-              userId,
-              ownerId: transcript.userId,
-            });
+            logger.warn(
+              "Commit track rejected: not owner",
+              { transcriptId: transcript_id, userId, ownerId: transcript.userId },
+              reqCtx,
+            );
             return json({ error: "Forbidden: You can only track commits for your own transcripts" }, { status: 403 });
           }
-
           await db.insert(commitTracking).values({
             userId,
             transcriptId: transcript_id,
@@ -93,22 +99,29 @@ export const Route = createFileRoute("/api/commit-track")({
             commitTitle: commit_title,
             branch,
           });
-
-          logger.info("Commit track stored", {
-            userId,
-            transcriptId: transcript_id.substring(0, 8),
-            repoPath: repo_path,
-            commitSha: commit_sha?.substring(0, 8),
-          });
-
+          logger.info(
+            "Commit track stored",
+            {
+              userId,
+              transcriptId: transcript_id.substring(0, 8),
+              repoPath: repo_path,
+              commitSha: commit_sha?.substring(0, 8),
+            },
+            reqCtx,
+          );
           return json({ success: true });
         } catch (error) {
-          logger.error("Commit track insert failed", {
-            userId,
-            transcriptId: transcript_id.substring(0, 8),
-            repoPath: repo_path,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          logger.error(
+            "Commit track insert failed",
+            {
+              userId,
+              transcriptId: transcript_id?.substring(0, 8),
+              repoPath: repo_path,
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            },
+            reqCtx,
+          );
           return json({ error: "Failed to track commit" }, { status: 500 });
         }
       },
