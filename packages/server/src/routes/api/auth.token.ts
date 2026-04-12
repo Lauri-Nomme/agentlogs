@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import { createDrizzle } from "../../db";
 import { session, user } from "../../db/schema";
 import { env } from "../../lib/env";
+import { logger } from "../../lib/logger";
+import { getRequestContext } from "../../lib/request-context";
 
 interface NormalizedProfile {
   email: string;
@@ -59,7 +61,7 @@ function getConfiguredProviders(): OAuthProvider[] {
 }
 
 /** Try each configured provider's userinfo endpoint with the token. Returns the first match. */
-async function resolveProfile(token: string): Promise<NormalizedProfile | null> {
+async function resolveProfile(token: string, ctx: any): Promise<NormalizedProfile | null> {
   const providers = getConfiguredProviders();
   for (const provider of providers) {
     try {
@@ -70,7 +72,12 @@ async function resolveProfile(token: string): Promise<NormalizedProfile | null> 
       const raw = (await resp.json()) as Record<string, unknown>;
       const profile = provider.normalizeProfile(raw);
       if (profile) return profile;
-    } catch {
+    } catch (err) {
+      logger.warn(
+        `Provider ${provider.id} userinfo endpoint unreachable`,
+        { error: err instanceof Error ? err.message : String(err) },
+        ctx,
+      );
       // provider unreachable — try next
     }
   }
@@ -81,7 +88,10 @@ export const Route = createFileRoute("/api/auth/token")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const ctx = getRequestContext(request);
+        logger.info("POST /api/auth/token: Incoming token exchange request", {}, ctx);
         if (getConfiguredProviders().length === 0) {
+          logger.error("POST /api/auth/token: No configured providers", {}, ctx);
           return new Response(JSON.stringify({ error: "token exchange is not enabled on this server" }), {
             status: 404,
           });
@@ -89,13 +99,21 @@ export const Route = createFileRoute("/api/auth/token")({
 
         const { token } = (await request.json()) as { token?: string };
         if (!token) {
+          logger.error("POST /api/auth/token: Token missing in request", {}, ctx);
           return new Response(JSON.stringify({ error: "token required" }), { status: 400 });
         }
 
-        const profile = await resolveProfile(token);
+        const profile = await resolveProfile(token, ctx);
         if (!profile) {
+          logger.warn("POST /api/auth/token: Invalid or unresolvable token", {}, ctx);
           return new Response(JSON.stringify({ error: "invalid token" }), { status: 401 });
         }
+
+        logger.info(
+          "POST /api/auth/token: Token resolved, proceeding to upsert user",
+          { email: profile.email, username: profile.username },
+          ctx,
+        );
 
         const db = createDrizzle(env.DB);
 
@@ -110,38 +128,81 @@ export const Route = createFileRoute("/api/auth/token")({
         if (!existingUser) {
           // Create users with the same default role policy as OAuth signups.
           const defaultRole = env.WAITLIST_ENABLED ? "waitlist" : "user";
-          const newUsers = await db
-            .insert(user)
-            .values({
-              id: crypto.randomUUID(),
-              name: profile.name,
-              username: profile.username,
-              email: profile.email,
-              emailVerified: true,
-              image: profile.image,
-              role: defaultRole,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .returning();
-          existingUser = newUsers[0];
+          try {
+            const newUsers = await db
+              .insert(user)
+              .values({
+                id: crypto.randomUUID(),
+                name: profile.name,
+                username: profile.username,
+                email: profile.email,
+                emailVerified: true,
+                image: profile.image,
+                role: defaultRole,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .returning();
+            existingUser = newUsers[0];
+            logger.info(
+              "POST /api/auth/token: Created new user",
+              { userId: existingUser.id, email: existingUser.email },
+              ctx,
+            );
+          } catch (err) {
+            logger.error(
+              "POST /api/auth/token: Failed to create user",
+              {
+                email: profile.email,
+                error: err instanceof Error ? err.message : String(err),
+                stack: err instanceof Error ? err.stack : undefined,
+              },
+              ctx,
+            );
+            return new Response(JSON.stringify({ error: "failed to create user" }), { status: 500 });
+          }
         }
 
         if (!existingUser) {
+          logger.error("POST /api/auth/token: User object is null after upsert", { email: profile.email }, ctx);
           return new Response(JSON.stringify({ error: "failed to create user" }), { status: 500 });
         }
 
         // Create session directly in DB
         const sessionToken = crypto.randomUUID();
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
-        await db.insert(session).values({
-          id: crypto.randomUUID(),
-          token: sessionToken,
-          userId: existingUser.id,
-          expiresAt,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
+        try {
+          await db.insert(session).values({
+            id: crypto.randomUUID(),
+            token: sessionToken,
+            userId: existingUser.id,
+            expiresAt,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+          logger.info(
+            "POST /api/auth/token: Session created",
+            { userId: existingUser.id, email: existingUser.email, expiresAt },
+            ctx,
+          );
+        } catch (err) {
+          logger.error(
+            "POST /api/auth/token: Failed to create session",
+            {
+              userId: existingUser.id,
+              error: err instanceof Error ? err.message : String(err),
+              stack: err instanceof Error ? err.stack : undefined,
+            },
+            ctx,
+          );
+          return new Response(JSON.stringify({ error: "failed to create session" }), { status: 500 });
+        }
+
+        logger.info(
+          "POST /api/auth/token: Authentication flow succeeded",
+          { userId: existingUser.id, email: existingUser.email },
+          ctx,
+        );
 
         return new Response(
           JSON.stringify({
