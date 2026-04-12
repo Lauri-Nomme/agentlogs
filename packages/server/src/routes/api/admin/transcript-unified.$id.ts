@@ -27,6 +27,13 @@ async function requireAdmin(request: Request, reqCtx?: any): Promise<string | Re
       headers: { "Content-Type": "application/json" },
     });
   }
+  if (reqCtx) {
+    logger.info(
+      "Admin privilege granted",
+      { adminId: session.user.id, role, transcriptId: reqCtx.transcriptId },
+      reqCtx,
+    );
+  }
   return session.user.id;
 }
 

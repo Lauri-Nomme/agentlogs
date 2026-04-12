@@ -23,7 +23,7 @@ export const Route = createFileRoute("/api/commit-track")({
       POST: async ({ request }) => {
         const db = createDrizzle(env.DB);
         const reqCtx = getRequestContext(request);
-        logger.debug("Commit track request received", undefined, reqCtx);
+        logger.info("Commit track request received", undefined, reqCtx);
         let userId: string;
         let userRole: "user" | "admin";
         try {

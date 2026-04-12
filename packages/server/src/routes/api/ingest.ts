@@ -33,7 +33,7 @@ export const Route = createFileRoute("/api/ingest")({
         const auth = createAuth();
         let userId: string | undefined = undefined;
         const reqCtx = getRequestContext(request);
-        logger.debug("Ingest request received", undefined, reqCtx);
+        logger.info("Ingest request received", undefined, reqCtx);
         const session = await auth.api.getSession({ headers: request.headers });
         try {
           const activeUser = await requireActiveUserFromSession(session, db);
