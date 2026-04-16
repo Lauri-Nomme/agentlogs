@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import spawn from "cross-spawn";
 import { readFileSync, unlinkSync, openSync, closeSync } from "fs";
 import * as os from "os";
 import type { OpenCodeExport } from "@agentlogs/shared";
