@@ -15,10 +15,6 @@ Task: "{prompt}"
 
 Title:`;
 
-export interface SummarizerOptions {
-  model?: string;
-}
-
 export interface SummaryResult {
   summary: string;
   model: string;
@@ -28,25 +24,26 @@ export interface SummaryResult {
 
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-flash-preview";
 
-function getAIConfig(): { model: ReturnType<typeof createOpenAI | typeof createOpenRouter>; modelId: string } | null {
+function getAIConfig(): { model: Parameters<typeof generateText>[0]["model"]; modelId: string } | null {
   const aiBaseUrl = (env as unknown as Record<string, unknown>).AI_BASE_URL as string | undefined;
   const aiApiKey = (env as unknown as Record<string, unknown>).AI_API_KEY as string | undefined;
   const aiModel = (env as unknown as Record<string, unknown>).AI_MODEL as string | undefined;
 
   // Prefer AI_BASE_URL (OpenAI-compatible endpoint, e.g. Ollama, vLLM)
+  // Use .chat() to force /v1/chat/completions (not /v1/responses which most providers don't support)
   if (aiBaseUrl && aiModel) {
     const provider = createOpenAI({
       baseURL: aiBaseUrl,
       apiKey: aiApiKey || "no-key-required",
     });
-    return { model: provider, modelId: aiModel };
+    return { model: provider.chat(aiModel), modelId: aiModel };
   }
 
   // Fall back to OpenRouter
   const openrouterKey = (env as unknown as Record<string, unknown>).OPENROUTER_API_KEY as string | undefined;
   if (openrouterKey) {
     const provider = createOpenRouter({ apiKey: openrouterKey });
-    return { model: provider, modelId: DEFAULT_OPENROUTER_MODEL };
+    return { model: provider(DEFAULT_OPENROUTER_MODEL), modelId: DEFAULT_OPENROUTER_MODEL };
   }
 
   return null;
@@ -67,7 +64,7 @@ function isTestEnvironment(): boolean {
  *
  * Returns a stub value in test environments or when no AI backend is configured.
  */
-export async function generateSummary(userPrompt: string, options: SummarizerOptions = {}): Promise<SummaryResult> {
+export async function generateSummary(userPrompt: string): Promise<SummaryResult> {
   // Skip AI generation in test environment
   if (isTestEnvironment()) {
     return {
@@ -84,13 +81,10 @@ export async function generateSummary(userPrompt: string, options: SummarizerOpt
     };
   }
 
-  const modelId = options.model ?? config.modelId;
-  const model = config.model(modelId);
-
   const prompt = SUMMARIZE_PROMPT.replace("{prompt}", userPrompt.trim());
 
   const result = await generateText({
-    model,
+    model: config.model,
     prompt,
     maxTokens: 50,
     temperature: 0.3,
@@ -106,7 +100,7 @@ export async function generateSummary(userPrompt: string, options: SummarizerOpt
   const usage = result.usage as any;
   return {
     summary,
-    model: modelId,
+    model: config.modelId,
     promptTokens: usage?.promptTokens,
     completionTokens: usage?.completionTokens,
   };
