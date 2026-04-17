@@ -1,4 +1,5 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { env } from "@/lib/env";
 
@@ -25,8 +26,30 @@ export interface SummaryResult {
   completionTokens?: number;
 }
 
-function getApiKey(): string | undefined {
-  return (env as unknown as Record<string, unknown>).OPENROUTER_API_KEY as string | undefined;
+const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-flash-preview";
+
+function getAIConfig(): { model: ReturnType<typeof createOpenAI | typeof createOpenRouter>; modelId: string } | null {
+  const aiBaseUrl = (env as unknown as Record<string, unknown>).AI_BASE_URL as string | undefined;
+  const aiApiKey = (env as unknown as Record<string, unknown>).AI_API_KEY as string | undefined;
+  const aiModel = (env as unknown as Record<string, unknown>).AI_MODEL as string | undefined;
+
+  // Prefer AI_BASE_URL (OpenAI-compatible endpoint, e.g. Ollama, vLLM)
+  if (aiBaseUrl && aiModel) {
+    const provider = createOpenAI({
+      baseURL: aiBaseUrl,
+      apiKey: aiApiKey || "no-key-required",
+    });
+    return { model: provider, modelId: aiModel };
+  }
+
+  // Fall back to OpenRouter
+  const openrouterKey = (env as unknown as Record<string, unknown>).OPENROUTER_API_KEY as string | undefined;
+  if (openrouterKey) {
+    const provider = createOpenRouter({ apiKey: openrouterKey });
+    return { model: provider, modelId: DEFAULT_OPENROUTER_MODEL };
+  }
+
+  return null;
 }
 
 function isTestEnvironment(): boolean {
@@ -36,9 +59,13 @@ function isTestEnvironment(): boolean {
 
 /**
  * Generate a short summary/title for a coding conversation
- * using a lightweight LLM via OpenRouter.
+ * using a lightweight LLM.
  *
- * Returns a stub value in test environments or when OPENROUTER_API_KEY is not configured.
+ * Supports two backends:
+ * 1. Any OpenAI-compatible API (Ollama, vLLM, etc.) via AI_BASE_URL + AI_MODEL + optional AI_API_KEY
+ * 2. OpenRouter via OPENROUTER_API_KEY (uses google/gemini-3-flash-preview)
+ *
+ * Returns a stub value in test environments or when no AI backend is configured.
  */
 export async function generateSummary(userPrompt: string, options: SummarizerOptions = {}): Promise<SummaryResult> {
   // Skip AI generation in test environment
@@ -49,18 +76,16 @@ export async function generateSummary(userPrompt: string, options: SummarizerOpt
     };
   }
 
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  const config = getAIConfig();
+  if (!config) {
     return {
       summary: "AI generated summary",
       model: "stub",
     };
   }
 
-  const modelId = options.model ?? "google/gemini-3-flash-preview";
-
-  const openrouter = createOpenRouter({ apiKey });
-  const model = openrouter(modelId);
+  const modelId = options.model ?? config.modelId;
+  const model = config.model(modelId);
 
   const prompt = SUMMARIZE_PROMPT.replace("{prompt}", userPrompt.trim());
 
