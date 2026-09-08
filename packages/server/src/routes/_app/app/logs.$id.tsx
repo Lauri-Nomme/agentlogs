@@ -62,14 +62,19 @@ import {
   PiIcon,
 } from "../../../components/icons/source-icons";
 import { MarkdownRenderer } from "../../../components/markdown-renderer";
-import { groupMessagesIntoSegments, isInternalMessage } from "../../../lib/message-segments";
+import {
+  groupMessagesIntoSegments,
+  isInternalMessage,
+  isSteeringMessage,
+  type CollapsedMessageSegmentItem,
+  type MessageReference,
+} from "../../../lib/message-segments";
 
 import {
   extractImageReferences,
   type ImageReference,
   replaceImageReferencesForDisplay,
 } from "../../../lib/message-utils";
-import { isSteeringMessage } from "../../../lib/message-segments";
 import { deleteTranscript, getTranscript, updateTitle, updateVisibility } from "../../../lib/server-functions";
 
 export const Route = createFileRoute("/_app/app/logs/$id")({
@@ -216,23 +221,11 @@ function TranscriptDetailComponent() {
   // Track permalinked message from URL hash
   const [permalinkedIndex, setPermalinkedIndex] = useState<number | null>(null);
 
-  // Auto-scroll to message and set permalink if hash is present in URL
+  // Restore the permalink first; its message scrolls into view after mounting.
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash) {
-      const target = document.querySelector(hash);
-      if (target) {
-        const rect = target.getBoundingClientRect();
-        const scrollTop = window.scrollY + rect.top - 16;
-        window.scrollTo({ top: scrollTop, behavior: "instant" });
-      }
-      // Set permalinked index from hash
-      const match = hash.match(/^#msg-(\d+)$/);
-      if (match) {
-        setPermalinkedIndex(parseInt(match[1], 10) - 1);
-      }
-    }
-  }, []);
+    const match = window.location.hash.match(/^#msg-(\d+)$/);
+    setPermalinkedIndex(match ? parseInt(match[1], 10) - 1 : null);
+  }, [data.id]);
 
   // Clear permalinked state on first user scroll (delay to ignore programmatic scrolls)
   useEffect(() => {
@@ -408,6 +401,8 @@ function TranscriptDetailComponent() {
                 stepCount={segment.stepCount}
                 steeringCount={segment.steeringCount}
                 showDebugInfo={showDebugInfo}
+                permalinkedIndex={permalinkedIndex}
+                onPermalink={setPermalinkedIndex}
               />
             ),
           )}
@@ -1063,6 +1058,12 @@ interface MessageBlockProps {
 function MessageBlock({ message, index, showDebugInfo, isPermalinked, onPermalink }: MessageBlockProps) {
   const messageId = `msg-${index + 1}`;
 
+  useEffect(() => {
+    if (isPermalinked) {
+      document.getElementById(messageId)?.scrollIntoView({ behavior: "instant", block: "start" });
+    }
+  }, [isPermalinked, messageId]);
+
   // User message - dark pill with avatar
   if (message.type === "user") {
     // Skip internal system messages
@@ -1179,16 +1180,26 @@ function CollapsedSteps({
   stepCount,
   steeringCount,
   showDebugInfo,
+  permalinkedIndex,
+  onPermalink,
 }: {
-  items: Array<
-    | { type: "steps"; messages: Array<{ message: UnifiedTranscriptMessage; index: number }> }
-    | { type: "steering"; message: UnifiedTranscriptMessage; index: number }
-  >;
+  items: CollapsedMessageSegmentItem[];
   stepCount: number;
   steeringCount: number;
   showDebugInfo?: boolean;
+  permalinkedIndex: number | null;
+  onPermalink: (index: number) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const containsPermalink = items.some((item) =>
+    item.type === "steering"
+      ? item.index === permalinkedIndex
+      : item.messages.some(({ index }) => index === permalinkedIndex),
+  );
+
+  useEffect(() => {
+    if (containsPermalink) setIsOpen(true);
+  }, [containsPermalink]);
 
   if (items.length === 0) return null;
 
@@ -1248,11 +1259,25 @@ function CollapsedSteps({
         <div className="mt-3 ml-2 space-y-3 border-l border-border pl-4">
           {items.map((item, itemIndex) => {
             if (item.type === "steps") {
+              if (steeringCount === 0) {
+                return item.messages.map(({ message, index }) => (
+                  <MessageBlock
+                    key={index}
+                    message={message}
+                    index={index}
+                    showDebugInfo={showDebugInfo}
+                    isPermalinked={permalinkedIndex === index}
+                    onPermalink={onPermalink}
+                  />
+                ));
+              }
               return (
                 <NestedCollapsedSteps
                   key={`steps-${itemIndex}`}
                   messages={item.messages}
                   showDebugInfo={showDebugInfo}
+                  permalinkedIndex={permalinkedIndex}
+                  onPermalink={onPermalink}
                 />
               );
             }
@@ -1263,6 +1288,8 @@ function CollapsedSteps({
                 message={item.message}
                 index={item.index}
                 showDebugInfo={showDebugInfo}
+                isPermalinked={permalinkedIndex === item.index}
+                onPermalink={onPermalink}
               />
             );
           })}
@@ -1275,11 +1302,20 @@ function CollapsedSteps({
 function NestedCollapsedSteps({
   messages,
   showDebugInfo,
+  permalinkedIndex,
+  onPermalink,
 }: {
-  messages: Array<{ message: UnifiedTranscriptMessage; index: number }>;
+  messages: MessageReference[];
   showDebugInfo?: boolean;
+  permalinkedIndex: number | null;
+  onPermalink: (index: number) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const containsPermalink = messages.some(({ index }) => index === permalinkedIndex);
+
+  useEffect(() => {
+    if (containsPermalink) setIsOpen(true);
+  }, [containsPermalink]);
 
   if (messages.length === 0) return null;
 
@@ -1296,7 +1332,14 @@ function NestedCollapsedSteps({
       <CollapsibleContent>
         <div className="mt-3 ml-2 space-y-3 border-l border-border/70 pl-4">
           {messages.map(({ message, index }) => (
-            <MessageBlock key={index} message={message} index={index} showDebugInfo={showDebugInfo} />
+            <MessageBlock
+              key={index}
+              message={message}
+              index={index}
+              showDebugInfo={showDebugInfo}
+              isPermalinked={permalinkedIndex === index}
+              onPermalink={onPermalink}
+            />
           ))}
         </div>
       </CollapsibleContent>
