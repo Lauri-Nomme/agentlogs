@@ -104,6 +104,33 @@ function contentToOutput(content: ToolResultLike["content"]): string {
     .join("\n");
 }
 
+/**
+ * Event types that signal "the session completed a unit of work; publish it".
+ * `session.idle` is the primary signal but is not delivered on the plugin event
+ * stream in every flow, so completion events are reliable fallbacks.
+ */
+export function isPublishTrigger(eventType: string): boolean {
+  return (
+    eventType === "session.idle" ||
+    eventType === "session.execution.succeeded" ||
+    eventType === "session.execution.failed" ||
+    eventType === "session.execution.interrupted"
+  );
+}
+
+/**
+ * Read the session id out of a subscribed event, tolerating the fact that the
+ * event data union only sometimes carries one.
+ */
+function eventSessionID(event: { type: string; data?: unknown }): string {
+  const data = event.data;
+  if (data && typeof data === "object" && "sessionID" in data) {
+    const id = (data as { sessionID?: unknown }).sessionID;
+    if (typeof id === "string") return id;
+  }
+  return "";
+}
+
 function createLocationHandlers(options: {
   cwd: string;
   version: OpenCodeVersion;
@@ -354,7 +381,7 @@ export function createAgentLogsPlugin(options: CreateOptions = {}) {
       const controller = new AbortController();
       void (async () => {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (event.type === "session.idle") handlers.scheduleIdle(event.data?.sessionID ?? "");
+          if (isPublishTrigger(event.type)) handlers.scheduleIdle(eventSessionID(event));
         }
       })().catch((error) => log("event subscription error", { error: String(error) }));
 

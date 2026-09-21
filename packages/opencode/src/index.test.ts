@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { createHookQueue, resolveCli, type Clock } from "./lib/hooks";
-import { createAgentLogsPlugin, type ToolExecuteAfterEvent, type ToolExecuteBeforeEvent } from "./lib/plugin";
+import {
+  createAgentLogsPlugin,
+  isPublishTrigger,
+  type ToolExecuteAfterEvent,
+  type ToolExecuteBeforeEvent,
+} from "./lib/plugin";
 import type { HookPayload, HookResponse } from "./lib/process";
 
 async function flush() {
@@ -303,6 +308,22 @@ describe("OpenCode 1 server adapter", () => {
     expect(h.calls[1].payload.tool_output).toEqual({ output: "[main 1234567] Fix", metadata: { exit: 0 } });
     expect(h.calls[1].payload.opencode_version).toBe("1");
     await h.finish(1);
+  });
+});
+
+describe("publish triggers", () => {
+  it("treats idle and execution completion as publish triggers", () => {
+    expect(isPublishTrigger("session.idle")).toBe(true);
+    expect(isPublishTrigger("session.execution.succeeded")).toBe(true);
+    expect(isPublishTrigger("session.execution.failed")).toBe(true);
+    expect(isPublishTrigger("session.execution.interrupted")).toBe(true);
+  });
+
+  it("ignores unrelated session activity", () => {
+    expect(isPublishTrigger("session.step.started")).toBe(false);
+    expect(isPublishTrigger("session.tool.called")).toBe(false);
+    expect(isPublishTrigger("session.text.delta")).toBe(false);
+    expect(isPublishTrigger("message.updated")).toBe(false);
   });
 });
 
